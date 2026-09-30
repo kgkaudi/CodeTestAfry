@@ -1,10 +1,10 @@
 ![here we are](https://media.giphy.com/media/FnGJfc18tDDHy/giphy.gif)
 
-From the movie Hackers 😄 
+From the movie Hackers 😄
 
 # Toll Fee Calculator
 
-A C# / ASP.NET Core solution that calculates vehicle toll fees for a city, rebuilt from the original "production-ready" code base. It has a domain library, a small HTTP API, a unit-test suite and a Postman collection for end-to-end checks.
+A C# / ASP.NET Core solution that calculates vehicle toll fees for a city, rebuilt from the original "production-ready" code base. It has a domain library, a small controller-based HTTP API, a unit-test suite and a Postman collection for end-to-end checks.
 
 > **Scope: 2013 only.** Toll-free days are defined for 2013, as in the original code. Passages in any other year are rejected instead of silently being charged as ordinary days (see [Assumptions](#assumptions-and-design-decisions)).
 
@@ -103,28 +103,36 @@ The charged windows for a calendar day are summed and capped at **60 SEK**. The 
 ├── README.md
 ├── LICENSE
 ├── .gitignore
-└── TollFeeCalculator/                 Solution folder: run dotnet commands from here
+└── TollFeeCalculator/                     Solution folder: run dotnet commands from here
     ├── TollFeeCalculator.slnx
     ├── postman/
     │   └── TollFeeCalculator.postman_collection.json
     ├── src/
-    │   ├── TollFeeCalculator.Core/        Domain logic, no ASP.NET dependency
-    │   │   ├── TollCalculator.cs          Windowing, daily cap, per-day grouping
-    │   │   ├── FeeSchedule.cs             Time bands and fees
-    │   │   ├── VehicleType.cs             Vehicle enum and fee-free check
-    │   │   ├── IHolidayProvider.cs        Abstraction for fee-free days
-    │   │   ├── Holiday2013Provider.cs     2013 implementation
-    │   │   └── TollResult.cs              Result records (total + per-day breakdown)
-    │   └── TollFeeCalculator.Api/         ASP.NET Core minimal API
-    │       └── Program.cs                 POST /api/toll/calculate
+    │   ├── TollFeeCalculator.Core/            Domain logic, no ASP.NET dependency
+    │   │   ├── TollCalculator.cs              Windowing, daily cap, per-day grouping
+    │   │   ├── FeeSchedule.cs                 Time bands and fees
+    │   │   ├── VehicleType.cs                 Vehicle enum and fee-free check
+    │   │   ├── IHolidayProvider.cs            Abstraction for fee-free days
+    │   │   ├── Holiday2013Provider.cs         2013 implementation
+    │   │   └── TollResult.cs                  Result records (total + per-day breakdown)
+    │   └── TollFeeCalculator.Api/             ASP.NET Core controller-based API
+    │       ├── Program.cs                     Host setup and DI registrations only
+    │       ├── Controllers/
+    │       │   └── TollController.cs          POST /api/toll/calculate
+    │       ├── Models/
+    │       │   └── CalculateRequest.cs         Request body
+    │       └── Validation/
+    │           └── VehicleTypeParser.cs        Parses and validates vehicleType
     └── tests/
-        └── TollFeeCalculator.Tests/       xUnit tests
+        └── TollFeeCalculator.Tests/        xUnit tests
             ├── FeeScheduleTests.cs
             ├── HolidayProviderTests.cs
-            └── TollCalculatorTests.cs
+            ├── TollCalculatorTests.cs
+            ├── VehicleTypeParserTests.cs
+            └── TollControllerTests.cs
 ```
 
-Keeping the logic in `Core` makes it testable without starting a web server, and lets other front ends (a console app, a worker) reuse it.
+Keeping the logic in `Core` makes it testable without starting a web server, and lets other front ends (a console app, a worker) reuse it. The API layer stays thin: `Program.cs` only wires up services, and request handling, the request model, and vehicle-type parsing each live in their own file.
 
 ## Getting started
 
@@ -148,6 +156,8 @@ cd TollFeeCalculator
   ```bash
   sed -i 's/net8.0/net10.0/' src/*/*.csproj tests/*/*.csproj
   ```
+
+  All three `.csproj` files must target the **same** framework version — if only one is changed, `dotnet build`/`dotnet test` fails with an `NU1201` "is not compatible with" error.
 
   If a test run fails with "You must install or update .NET to run this application", the runtime for the target framework is missing; use one of the two options above.
 
@@ -187,6 +197,8 @@ What the tests cover:
 | `FeeScheduleTests` | Every fee band boundary (e.g. 06:29 gives 8, 06:30 gives 13), including regression cases for the original 09:00-14:29 bug |
 | `HolidayProviderTests` | Every 2013 toll-free date, ordinary working days, and rejection of other years |
 | `TollCalculatorTests` | Once-per-hour rule, window anchoring, daily cap, exempt vehicles, weekends, July, multiple days, unsorted input, unsupported years |
+| `VehicleTypeParserTests` | Valid names (case-insensitive) and numeric values, unknown names, out-of-range numbers, `null`, booleans, objects, arrays, a missing field |
+| `TollControllerTests` | The controller action directly: a valid request returns 200 with the right fee; an unknown vehicle type, empty/`null` passages, a passage outside 2013, and both fields invalid at once each return 400 with the expected error key(s) |
 
 All tests should pass.
 
@@ -217,7 +229,7 @@ Use the port shown in the startup output if it differs. Stop the API with `Ctrl+
 
 ### Test the API with Postman
 
-The collection in `postman/TollFeeCalculator.postman_collection.json` contains **75 requests**. Each one has test scripts that assert the expected status code and fee, so a full run tells you at a glance whether the API behaves correctly.
+The collection in `postman/TollFeeCalculator.postman_collection.json` contains **85 requests**. Each one has test scripts that assert the expected status code and fee, so a full run tells you at a glance whether the API behaves correctly.
 
 **Steps**
 
@@ -257,6 +269,8 @@ npx newman run postman/TollFeeCalculator.postman_collection.json --env-var "base
 ## API
 
 ### `POST /api/toll/calculate`
+
+Handled by `TollController.Calculate` (`Controllers/TollController.cs`).
 
 **Request body**
 
@@ -313,7 +327,7 @@ An invalid vehicle type (unknown name such as `"Bicycle"`, a number that isn't a
 }
 ```
 
-An empty or missing `passages` list returns an error under the `passages` key. An unparseable date-time or malformed JSON also returns `400`, but with no response body.
+An empty or missing `passages` list returns an error under the `passages` key. Both fields can be invalid at once, in which case both error keys are returned together. An unparseable date-time or malformed JSON also returns `400`, but with no response body.
 
 ## Assumptions and design decisions
 
@@ -322,7 +336,8 @@ An empty or missing `passages` list returns an error under the `passages` key. A
 - **Scope is 2013.** Supporting other years means providing a different `IHolidayProvider`. Nothing else has to change.
 - **Fee bands** follow the standard Swedish congestion-tax schedule and match the intent of the original code. They live in `FeeSchedule.Default` and can be moved into configuration.
 - **Local time.** Timestamps are treated as city-local time and `DateTime.Kind` is ignored.
-- **Enum instead of strings** for vehicle types in the domain, so a typo can't compile. At the API boundary the value is validated in one place, so every invalid value produces the same clear message.
+- **Enum instead of strings** for vehicle types in the domain, so a typo can't compile. At the API boundary, `VehicleTypeParser` validates the raw value in one place, so every invalid value — an unknown name, an out-of-range number, `null`, or a missing field — produces the same clear message.
+- **Controller over a minimal API.** `TollController` keeps `Program.cs` limited to host setup, and lets the request handling be unit-tested directly (`TollControllerTests`) without going through HTTP.
 - **No state, no database.** Each request is self-contained.
 
 ## What was wrong with the original code
@@ -342,7 +357,7 @@ An empty or missing `passages` list returns an error under the `passages` key. A
 - Time zones and daylight-saving changes are not modelled.
 - Invalid date-times and malformed JSON return an empty 400 instead of a descriptive message.
 - No persistence, authentication or API documentation UI (for example OpenAPI/Swagger).
-- Integration tests for the HTTP endpoint could be added with `WebApplicationFactory`.
+- `TollControllerTests` exercises the controller action directly; true in-process HTTP integration tests could be added with `WebApplicationFactory` alongside it.
 
 ## Original assignment
 
@@ -377,4 +392,4 @@ Your job is to deliver the code and from now on, you are the responsible go-to-p
 #### Instructions
 You can make any modifications or suggestions for modifications that you see fit. Fork this repository and deliver your results via a pull-request. You could also create a gist, for privacy reasons, and send us the link.
 
-</details># CodeTestAfry
+</details>
